@@ -16,6 +16,7 @@ func main() {
 	if len(os.Args) != 2 || (os.Args[1] != "patient" && os.Args[1] != "provider") {
 		msg := fmt.Sprintf("Usage: %s [patient|provider]\n", os.Args[0])
 		os.Stderr.WriteString(msg)
+		os.Exit(1)
 	}
 	gn := os.Args[1]
 
@@ -47,9 +48,9 @@ func main() {
 	var tr []string
 	switch gn {
 	case "patient":
-		tr = []string{"TagId", "CSN", "Time"}
+		tr = []string{"TagId", "CSN", "ClarityStart", "ClarityEnd", "Time"}
 	case "provider":
-		tr = []string{"TagId", "UMId", "Time"}
+		tr = []string{"TagId", "UMid", "Time"}
 	default:
 		panic(fmt.Sprintf("Unknown group type: %s\n", gn))
 	}
@@ -76,6 +77,16 @@ func main() {
 			tr = append(tr, fmt.Sprintf("%d", r.UMid))
 		case "patient":
 			tr = append(tr, fmt.Sprintf("%d", r.CSN))
+			if !r.ClarityStart.IsZero() {
+				tr = append(tr, fmt.Sprintf("%s", r.ClarityStart.Format("2006-01-02T15:04")))
+			} else {
+				tr = append(tr, "")
+			}
+			if !r.ClarityEnd.IsZero() {
+				tr = append(tr, fmt.Sprintf("%s", r.ClarityEnd.Format("2006-01-02T15:04")))
+			} else {
+				tr = append(tr, "")
+			}
 		default:
 			panic(fmt.Sprintf("Unknown group type: %s\n", gn))
 		}

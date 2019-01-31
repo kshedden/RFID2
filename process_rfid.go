@@ -17,19 +17,40 @@ import (
 )
 
 var (
+	// All the Clarity records
+	clarity []*rfid.ClarityRecord
+
 	logger *log.Logger
 )
 
-type byIdTime []*rfid.RFIDrecord
+// Sort first by CSN, then by time, used for patients
+type byCSNTime []*rfid.RFIDrecord
 
-func (a byIdTime) Len() int      { return len(a) }
-func (a byIdTime) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
-func (a byIdTime) Less(i, j int) bool {
+func (a byCSNTime) Len() int      { return len(a) }
+func (a byCSNTime) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a byCSNTime) Less(i, j int) bool {
 
 	switch {
-	case a[i].TagId < a[j].TagId:
+	case a[i].CSN < a[j].CSN:
 		return true
-	case a[i].TagId > a[j].TagId:
+	case a[i].CSN > a[j].CSN:
+		return false
+	default:
+		return a[i].TimeStamp.Before(a[j].TimeStamp)
+	}
+}
+
+// Sort first by UMid, then by time, used for providers.
+type byUMidTime []*rfid.RFIDrecord
+
+func (a byUMidTime) Len() int      { return len(a) }
+func (a byUMidTime) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a byUMidTime) Less(i, j int) bool {
+
+	switch {
+	case a[i].UMid < a[j].UMid:
+		return true
+	case a[i].UMid > a[j].UMid:
 		return false
 	default:
 		return a[i].TimeStamp.Before(a[j].TimeStamp)
@@ -40,6 +61,7 @@ func (a byIdTime) Less(i, j int) bool {
 // containing RFIDrecord structs for patients and for providers respectively.
 func readDay(year, month, day int) ([]*rfid.RFIDrecord, []*rfid.RFIDrecord) {
 
+	// Each day of data is in a different file
 	fname := fmt.Sprintf("%4d-%02d-%02d_APD.csv.gz", year, month, day)
 	fname = path.Join("/", "home", "kshedden", "RFID", "data", "APD", fname)
 
@@ -110,8 +132,8 @@ func readDay(year, month, day int) ([]*rfid.RFIDrecord, []*rfid.RFIDrecord) {
 	logger.Printf("%d errors parsing csv file", nerr)
 
 	// Confirm that it is sorted by time
-	sort.Sort(byIdTime(provrecs))
-	sort.Sort(byIdTime(patrecs))
+	sort.Sort(byUMidTime(provrecs))
+	sort.Sort(byCSNTime(patrecs))
 
 	return patrecs, provrecs
 }
@@ -148,14 +170,12 @@ func processMinute(recs []*rfid.RFIDrecord, signals []float32) time.Time {
 	}
 	xvr = xvr[0:len(recs)]
 
-	// Get the largest 120 signals
+	// Keep at most 120 pings per minute (average 2/second)
 	for j, r := range recs {
 		xvr[j].room = r.IP
 		xvr[j].signal = float32(math.Exp(float64(r.Signal) / 10))
 	}
-
 	sort.Sort(xrs(xvr))
-
 	if len(xvr) > 120 {
 		xvr = xvr[0:120]
 	}
@@ -171,7 +191,9 @@ func processMinute(recs []*rfid.RFIDrecord, signals []float32) time.Time {
 	return t0
 }
 
-func saverec(r *rfid.RFIDrecord, tm time.Time, signals []float32, enc *gob.Encoder) {
+func saverec(r *rfid.RFIDrecord, tm time.Time, signals []float32, clarityRec *rfid.ClarityRecord,
+	enc *gob.Encoder) {
+
 	ox := rfid.SignalRec{
 		TagId:     r.TagId,
 		UMid:      r.UMid,
@@ -179,12 +201,34 @@ func saverec(r *rfid.RFIDrecord, tm time.Time, signals []float32, enc *gob.Encod
 		TimeStamp: tm,
 		Signals:   signals,
 	}
+
+	if clarityRec != nil {
+		ox.ClarityStart = clarityRec.CheckInTime
+		ox.ClarityEnd = clarityRec.CheckOutTime
+	}
+
 	if err := enc.Encode(&ox); err != nil {
 		panic(err)
 	}
 }
 
 func processPerson(recs []*rfid.RFIDrecord, signals []float32, enc *gob.Encoder) {
+
+	// Check if the CSN is in the Clarity data
+	var clarityRec *rfid.ClarityRecord
+	rec0 := recs[0]
+	csn := rec0.CSN
+	if csn != 0 {
+		ii := sort.Search(len(clarity), func(i int) bool { return csn <= clarity[i].CSN })
+		if ii < len(clarity) && clarity[ii].CSN == csn {
+			for j := ii; clarity[j].CSN == csn; j++ {
+				// We found a CSN match, but also need to check the date.
+				if clarity[j].CheckInTime.Truncate(24*time.Hour) == rec0.TimeStamp.Truncate(24*time.Hour) {
+					clarityRec = clarity[j]
+				}
+			}
+		}
+	}
 
 	for len(recs) > 0 {
 		i, f := 0, false
@@ -198,14 +242,33 @@ func processPerson(recs []*rfid.RFIDrecord, signals []float32, enc *gob.Encoder)
 			i += 1
 		}
 		tm := processMinute(recs[0:i], signals)
-		saverec(recs[0], tm, signals, enc)
+		saverec(recs[0], tm, signals, clarityRec, enc)
 		recs = recs[i:len(recs)]
 	}
+}
+
+func readClarity() {
+
+	fid, err := os.Open("clarity.gob.gz")
+	if err != nil {
+		panic(err)
+	}
+	defer fid.Close()
+
+	gid, err := gzip.NewReader(fid)
+	if err != nil {
+		panic(err)
+	}
+	defer gid.Close()
+
+	dec := gob.NewDecoder(gid)
+	dec.Decode(&clarity)
 }
 
 func main() {
 
 	setupLog()
+	readClarity()
 
 	// Setup encoders for patients and providers
 	var enc [2]*gob.Encoder
@@ -244,10 +307,27 @@ func main() {
 					}
 
 					for len(v) > 0 {
-						tagid := v[0].TagId
+						var id uint64
+						switch j {
+						case 0:
+							id = v[0].CSN
+						case 1:
+							id = v[0].UMid
+						default:
+							panic("")
+						}
 						i, f := 0, false
 						for i = range v {
-							if v[i].TagId != tagid {
+							var id1 uint64
+							switch j {
+							case 0:
+								id1 = v[i].CSN
+							case 1:
+								id1 = v[i].UMid
+							default:
+								panic("")
+							}
+							if id1 != id {
 								f = true
 								break
 							}

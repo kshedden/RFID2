@@ -213,15 +213,20 @@ type RFIDrecord struct {
 
 	// The number of reads from the tag
 	Reads uint16
+
+	// The Clarity record for this appointment, if available.
+	Clarity *ClarityRecord
 }
 
 // SignalRec ...
 type SignalRec struct {
-	TagId     uint64
-	UMid      uint64
-	CSN       uint64
-	TimeStamp time.Time
-	Signals   []float32
+	TagId        uint64
+	UMid         uint64
+	CSN          uint64
+	TimeStamp    time.Time
+	Signals      []float32
+	ClarityStart time.Time
+	ClarityEnd   time.Time
 }
 
 // parsePatient parses a patient record from its raw input format into a struct.
